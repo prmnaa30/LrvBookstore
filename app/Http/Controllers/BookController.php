@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Author;
 use App\Models\Book;
 use App\Models\Category;
+use App\Models\Rating;
 use App\Models\Store;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -40,6 +41,16 @@ class BookController extends Controller
             ->withAvg('ratings', 'rating')
             ->withCount('ratings');
 
+        // Weighted avg rating
+        // WR = (v / (v + m)) * R + (m / (v + m)) * C
+        // m = minimum vote yang diperlukan ($minRate)
+        // v = ratings_count (dari withCount ratings)
+        // R = ratings_average_rating (dari withAvg ratings)
+        // C = pembulatan dari globalAvgRating.
+        $minRate = 10;
+        $globalAvgRating = Rating::avg('rating');
+        $C = round($globalAvgRating, 2);
+
         // Filter by popularity
         $sevenDaysAgo = now()->subDays(7);
         $fourteenDaysAgo = now()->subDays(14);
@@ -59,9 +70,11 @@ class BookController extends Controller
         }, 'avg_rating_prev_7_days');
 
         // Recent popularity (30 days)
-        $query->withCount(['ratings as recent_ratings_count' => function ($q) {
-            $q->where('created_at', '>=', now()->subDays(30));
-        }]);
+        $query->withCount([
+            'ratings as recent_ratings_count' => function ($q) {
+                $q->where('created_at', '>=', now()->subDays(30));
+            }
+        ]);
 
         // Filter by category
         if (!empty($filters['categories'])) {
@@ -110,7 +123,10 @@ class BookController extends Controller
         $sortOrder = $filters['sort'] ?? 'rating_desc';
 
         match ($sortOrder) {
-            'rating_desc' => $query->orderByRaw('ISNULL(ratings_avg_rating) ASC, ratings_avg_rating DESC'),
+            'rating_desc' => $query->orderByRaw('
+                ( (COALESCE(ratings_count, 0) / (COALESCE(ratings_count, 0) + ?)) * COALESCE(ratings_avg_rating, 0) + ( ? / (COALESCE(ratings_count, 0) + ?)) * ? ) DESC',
+                [$minRate, $minRate, $minRate, $C]
+            ),
             'votes_desc' => $query->orderBy('ratings_count', 'DESC'),
             'recent_popularity' => $query->orderBy('recent_ratings_count', 'DESC'),
             'alphabetical_asc' => $query->orderBy('title', 'ASC'),
